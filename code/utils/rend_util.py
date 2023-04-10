@@ -46,13 +46,14 @@ def load_K_Rt_from_P(filename, P=None):
     return intrinsics, pose
 
 def get_camera_params(uv, pose, intrinsics):
-    if pose.shape[1] == 7: #In case of quaternion vector representation
+    '''返回相机的 v [n_images,n_rays,3] 和 c [n_images,3]'''
+    if pose.shape[1] == 7:  # In case of quaternion vector representation
         cam_loc = pose[:, 4:]
         R = quat_to_rot(pose[:,:4])
         p = torch.eye(4).repeat(pose.shape[0],1,1).cuda().float()
         p[:, :3, :3] = R
         p[:, :3, 3] = cam_loc
-    else: # In case of pose matrix representation
+    else:  # In case of pose matrix representation
         cam_loc = pose[:, :3, 3]
         p = pose
 
@@ -75,10 +76,10 @@ def get_camera_params(uv, pose, intrinsics):
     return ray_dirs, cam_loc
 
 def get_camera_for_plot(pose):
-    if pose.shape[1] == 7: #In case of quaternion vector representation
+    if pose.shape[1] == 7:  # In case of quaternion vector representation
         cam_loc = pose[:, 4:].detach()
         R = quat_to_rot(pose[:,:4].detach())
-    else: # In case of pose matrix representation
+    else:  # In case of pose matrix representation
         cam_loc = pose[:, :3, 3]
         R = pose[:, :3, :3]
     cam_dir = R[:, :3, 2]
@@ -139,26 +140,29 @@ def rot_to_quat(R):
     return q
 
 def get_sphere_intersection(cam_loc, ray_directions, r = 1.0):
-    # Input: n_images x 4 x 4 ; n_images x n_rays x 3
-    # Output: n_images * n_rays x 2 (close and far) ; n_images * n_rays
-
+    '''
+    ray 与半径为 r 的球体的交点距离。
+    Input: [n_images,3]; [n_images,n_rays,3]
+    Output: [n_images,n_rays,2 (close and far)]; [n_images,n_rays]
+    '''
     n_imgs, n_pix, _ = ray_directions.shape
-
+    # [n_images,3,1]
     cam_loc = cam_loc.unsqueeze(-1)
+    # [n_images,n_rays]
     ray_cam_dot = torch.bmm(ray_directions, cam_loc).squeeze()
+    # [n_images,n_rays]
     under_sqrt = ray_cam_dot ** 2 - (cam_loc.norm(2,1) ** 2 - r ** 2)
-
+    # [n_images * n_rays]
     under_sqrt = under_sqrt.reshape(-1)
     mask_intersect = under_sqrt > 0
-
     sphere_intersections = torch.zeros(n_imgs * n_pix, 2).cuda().float()
+    # [n_images * n_rays,2]
     sphere_intersections[mask_intersect] = torch.sqrt(under_sqrt[mask_intersect]).unsqueeze(-1) * torch.Tensor([-1, 1]).cuda().float()
     sphere_intersections[mask_intersect] -= ray_cam_dot.reshape(-1)[mask_intersect].unsqueeze(-1)
-
     sphere_intersections = sphere_intersections.reshape(n_imgs, n_pix, 2)
+    # 下限设为 0.0
     sphere_intersections = sphere_intersections.clamp_min(0.0)
     mask_intersect = mask_intersect.reshape(n_imgs, n_pix)
-
     return sphere_intersections, mask_intersect
 
 def get_depth(points, pose):
