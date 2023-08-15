@@ -20,11 +20,11 @@ def get_class(kls):
     # datasets.scene_dataset.SceneDataset
     return m
 
-def glob_imgs(path):
-    imgs = []
-    for ext in ['*.png', '*.jpg', '*.JPEG', '*.JPG']:
-        imgs.extend(glob(os.path.join(path, ext)))
-    return imgs
+def glob_numpy(path):
+    files = []
+    for ext in ['*.npy']:
+        files.extend(glob(os.path.join(path, ext)))
+    return files
 
 def split_input(model_input, total_pixels):
     '''

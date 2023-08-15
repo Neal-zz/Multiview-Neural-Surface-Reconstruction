@@ -18,16 +18,14 @@ class IDRTrainRunner():
         self.nepochs = kwargs['nepochs']
         # 'exps'
         self.exps_folder_name = kwargs['exps_folder_name']
-        # False
-        self.train_cameras = kwargs['train_cameras']
-        # 'dtu_fixed_cameras' + ''
-        self.expname = self.conf.get_string('train.expname') + kwargs['expname']
-        # 65
+        # 'ys_fixed_cameras'
+        self.expname = self.conf.get_string('train.expname')
+        # 9
         scan_id = kwargs['scan_id'] if kwargs['scan_id'] != -1 else self.conf.get_int('dataset.scan_id', default=-1)
         if scan_id != -1:
-            # 'dtu_fixed_cameras' + '' + '_65'
+            # 'ys_fixed_cameras_9'
             self.expname = self.expname + '_{0}'.format(scan_id)
-        # False
+        # True and True 继续上一次的训练
         if kwargs['is_continue'] and kwargs['timestamp'] == 'latest':
             if os.path.exists(os.path.join('../',kwargs['exps_folder_name'],self.expname)):
                 timestamps = os.listdir(os.path.join('../',kwargs['exps_folder_name'],self.expname))
@@ -47,11 +45,11 @@ class IDRTrainRunner():
             is_continue = kwargs['is_continue']
         # ../exps
         utils.mkdir_ifnotexists(os.path.join('../',self.exps_folder_name))
-        # ../exps/dtu_fixed_cameras_65
+        # ../exps/ys_fixed_cameras_9
         self.expdir = os.path.join('../', self.exps_folder_name, self.expname)
         utils.mkdir_ifnotexists(self.expdir)
         self.timestamp = '{:%Y_%m_%d_%H_%M_%S}'.format(datetime.now())
-        # ../exps/dtu_fixed_cameras_65/2023_04_06
+        # ../exps/ys_fixed_cameras_9/2023_04_06
         utils.mkdir_ifnotexists(os.path.join(self.expdir, self.timestamp))
         self.plots_dir = os.path.join(self.expdir, self.timestamp, 'plots')
         utils.mkdir_ifnotexists(self.plots_dir)
@@ -63,22 +61,16 @@ class IDRTrainRunner():
         utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.model_params_subdir))
         utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.optimizer_params_subdir))
         utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.scheduler_params_subdir))
-        # False
-        if self.train_cameras:
-            self.optimizer_cam_params_subdir = "OptimizerCamParameters"
-            self.cam_params_subdir = "CamParameters"
-            utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.optimizer_cam_params_subdir))
-            utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.cam_params_subdir))
         # 将 conf 信息复制到 runconf.conf 文件
         os.system("""cp -r {0} "{1}" """.format(kwargs['conf'], os.path.join(self.expdir, self.timestamp, 'runconf.conf')))
         
         print('Loading data ...')
         dataset_conf = self.conf.get_config('dataset')
-        # 65
+        # 9
         if kwargs['scan_id'] != -1:
             dataset_conf['scan_id'] = kwargs['scan_id']
         # datasets.scene_dataset.SceneDataset(False, dataset_conf)
-        self.train_dataset = utils.get_class(self.conf.get_string('train.dataset_class'))(self.train_cameras, **dataset_conf)
+        self.train_dataset = utils.get_class(self.conf.get_string('train.dataset_class'))(**dataset_conf)
         self.train_dataloader = torch.utils.data.DataLoader(self.train_dataset,
                                                             batch_size=self.batch_size,
                                                             shuffle=True,
@@ -107,16 +99,8 @@ class IDRTrainRunner():
         self.sched_factor = self.conf.get_float('train.sched_factor', default=0.0)
         self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, self.sched_milestones, gamma=self.sched_factor)
         
-        # False
-        if self.train_cameras:
-            num_images = len(self.train_dataset)
-            self.pose_vecs = torch.nn.Embedding(num_images, 7, sparse=True).cuda()
-            self.pose_vecs.weight.data.copy_(self.train_dataset.get_pose_init())
-
-            self.optimizer_cam = torch.optim.SparseAdam(self.pose_vecs.parameters(), self.conf.get_float('train.learning_rate_cam'))
-
         self.start_epoch = 0
-        # False
+        # True
         if is_continue:
             old_checkpnts_dir = os.path.join(self.expdir, timestamp, 'checkpoints')
 
@@ -133,22 +117,7 @@ class IDRTrainRunner():
                 os.path.join(old_checkpnts_dir, self.scheduler_params_subdir, str(kwargs['checkpoint']) + ".pth"))
             self.scheduler.load_state_dict(data["scheduler_state_dict"])
 
-            if self.train_cameras:
-                data = torch.load(
-                    os.path.join(old_checkpnts_dir, self.optimizer_cam_params_subdir, str(kwargs['checkpoint']) + ".pth"))
-                self.optimizer_cam.load_state_dict(data["optimizer_cam_state_dict"])
-
-                data = torch.load(
-                    os.path.join(old_checkpnts_dir, self.cam_params_subdir, str(kwargs['checkpoint']) + ".pth"))
-                self.pose_vecs.load_state_dict(data["pose_vecs_state_dict"])
-
-        # 2048
-        self.num_pixels = self.conf.get_int('train.num_pixels')
-        # 1920000
-        self.total_pixels = self.train_dataset.total_pixels
-        # [1200,1600]
-        self.img_res = self.train_dataset.img_res
-        # 49 张照片
+        # 8 张照片
         self.n_batches = len(self.train_dataloader)
         # 100
         self.plot_freq = self.conf.get_int('train.plot_freq')
@@ -183,21 +152,6 @@ class IDRTrainRunner():
             {"epoch": epoch, "scheduler_state_dict": self.scheduler.state_dict()},
             os.path.join(self.checkpoints_path, self.scheduler_params_subdir, "latest.pth"))
 
-        if self.train_cameras:
-            torch.save(
-                {"epoch": epoch, "optimizer_cam_state_dict": self.optimizer_cam.state_dict()},
-                os.path.join(self.checkpoints_path, self.optimizer_cam_params_subdir, str(epoch) + ".pth"))
-            torch.save(
-                {"epoch": epoch, "optimizer_cam_state_dict": self.optimizer_cam.state_dict()},
-                os.path.join(self.checkpoints_path, self.optimizer_cam_params_subdir, "latest.pth"))
-
-            torch.save(
-                {"epoch": epoch, "pose_vecs_state_dict": self.pose_vecs.state_dict()},
-                os.path.join(self.checkpoints_path, self.cam_params_subdir, str(epoch) + ".pth"))
-            torch.save(
-                {"epoch": epoch, "pose_vecs_state_dict": self.pose_vecs.state_dict()},
-                os.path.join(self.checkpoints_path, self.cam_params_subdir, "latest.pth"))
-
     def run(self):
         
         print("training...")
@@ -213,23 +167,15 @@ class IDRTrainRunner():
             if epoch % 100 == 0:
                 self.save_checkpoints(epoch)
             
-            # 100
+            # 100 plot
             if epoch % self.plot_freq == 0:
                 self.model.eval()
-                # False
-                if self.train_cameras:
-                    self.pose_vecs.eval()
                 self.train_dataset.change_sampling_idx(-1)
                 indices, model_input, ground_truth = next(iter(self.plot_dataloader))
                 model_input["intrinsics"] = model_input["intrinsics"].cuda()
                 model_input["uv"] = model_input["uv"].cuda()
                 model_input["object_mask"] = model_input["object_mask"].cuda()
-                # False
-                if self.train_cameras:
-                    pose_input = self.pose_vecs(indices.cuda())
-                    model_input['pose'] = pose_input
-                else:
-                    model_input['pose'] = model_input['pose'].cuda()
+                model_input['pose'] = model_input['pose'].cuda()
 
                 split = utils.split_input(model_input, self.total_pixels)
                 res = []
@@ -257,41 +203,23 @@ class IDRTrainRunner():
                         )
 
                 self.model.train()
-                # False
-                if self.train_cameras:
-                    self.pose_vecs.train()
+                
+            # iteration = 8
+            for data_index, (indices, model_input) in enumerate(self.train_dataloader):
 
-            # 随机生成 2048 个 idx
-            self.train_dataset.change_sampling_idx(self.num_pixels)
-            # iteration = 49
-            for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
-
-                model_input["intrinsics"] = model_input["intrinsics"].cuda()
-                model_input["uv"] = model_input["uv"].cuda()
-                model_input["object_mask"] = model_input["object_mask"].cuda()
-                # False
-                if self.train_cameras:
-                    pose_input = self.pose_vecs(indices.cuda())
-                    model_input['pose'] = pose_input
-                else:
-                    model_input['pose'] = model_input['pose'].cuda()
+                model_input['pose'] = model_input['pose'].cuda()
+                model_input["points"] = model_input["points"].cuda()
 
                 # 正向传播
                 model_outputs = self.model(model_input)
 
                 # 计算 loss
-                loss_output = self.loss(model_outputs, ground_truth)
+                loss_output = self.loss(model_outputs, model_input)
                 loss = loss_output['loss']
-
                 self.optimizer.zero_grad()
-                # False
-                if self.train_cameras:
-                    self.optimizer_cam.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-                # False
-                if self.train_cameras:
-                    self.optimizer_cam.step()
+                
 
                 print('{0} [{1}] ({2}/{3}): loss = {4}, rgb_loss = {5}, eikonal_loss = {6}, mask_loss = {7}, alpha = {8}, lr = {9}'
                     .format(self.expname, epoch, data_index, self.n_batches, loss.item(),

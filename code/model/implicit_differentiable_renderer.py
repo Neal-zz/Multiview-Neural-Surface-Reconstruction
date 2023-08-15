@@ -20,7 +20,7 @@ class ImplicitNetwork(nn.Module):
                 multires=0
                 ):
         super().__init__()
-        # [3 , 512,512,512,512,512,512,512,512 , 1+256]
+        # [3 , 512,512,512,512,512,512,512,512 , 1+0]
         dims = [d_in] + dims + [d_out + feature_vector_size]
 
         self.embed_fn = None
@@ -83,103 +83,40 @@ class ImplicitNetwork(nn.Module):
                 x = self.softplus(x)
         return x
 
-    def gradient(self, x):
-        ''' 利用 autograd 获取 f 对 x 的梯度'''
-        x.requires_grad_(True)
-        y = self.forward(x)[:,:1]
-        d_output = torch.ones_like(y, requires_grad=False, device=y.device)
-        gradients = torch.autograd.grad(
-            outputs=y,
-            inputs=x,
-            grad_outputs=d_output,
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True)[0]
-        return gradients.unsqueeze(1)
-
-class RenderingNetwork(nn.Module):
-    def __init__(self,
-                feature_vector_size,
-                mode,
-                d_in,
-                d_out,
-                dims,
-                weight_norm=True,
-                multires_view=0
-                ):
-        super().__init__()
-        # idr
-        self.mode = mode
-        # [9+256 , 512,512,512,512 , 3]
-        dims = [d_in + feature_vector_size] + dims + [d_out]
-
-        self.embedview_fn = None
-        # 4
-        if multires_view > 0:
-            embedview_fn, input_ch = get_embedder(multires_view)
-            self.embedview_fn = embedview_fn
-            # (27-3)
-            dims[0] += (input_ch - 3)
-
-        # 6
-        self.num_layers = len(dims)
-        # range(0,5)
-        for l in range(0, self.num_layers - 1):
-            out_dim = dims[l + 1]
-            lin = nn.Linear(dims[l], out_dim)
-            # True
-            if weight_norm:
-                lin = nn.utils.weight_norm(lin)
-            # 设置 linl 为 lin
-            setattr(self, "lin" + str(l), lin)
-
-        self.relu = nn.ReLU()
-        self.tanh = nn.Tanh()
-
-    def forward(self, points, normals, view_dirs, feature_vectors):
-        if self.embedview_fn is not None:
-            # 将 view_dirs 拓展为 [x,sin(x),cos(x),...,sin(8x),cos(8x)] 3x9 维
-            view_dirs = self.embedview_fn(view_dirs)
-        if self.mode == 'idr':
-            # [3 + 27 + 3 + 256]
-            rendering_input = torch.cat([points, view_dirs, normals, feature_vectors], dim=-1)
-        elif self.mode == 'no_view_dir':
-            rendering_input = torch.cat([points, normals, feature_vectors], dim=-1)
-        elif self.mode == 'no_normal':
-            rendering_input = torch.cat([points, view_dirs, feature_vectors], dim=-1)
-        x = rendering_input
-        # range(0,5)
-        for l in range(0, self.num_layers - 1):
-            lin = getattr(self, "lin" + str(l))
-            x = lin(x)
-            # < 4
-            if l < self.num_layers - 2:
-                x = self.relu(x)
-        x = self.tanh(x)
-        return x
+    # def gradient(self, x):
+    #     ''' 利用 autograd 获取 f 对 x 的梯度'''
+    #     x.requires_grad_(True)
+    #     y = self.forward(x)[:,:1]
+    #     d_output = torch.ones_like(y, requires_grad=False, device=y.device)
+    #     gradients = torch.autograd.grad(
+    #         outputs=y,
+    #         inputs=x,
+    #         grad_outputs=d_output,
+    #         create_graph=True,
+    #         retain_graph=True,
+    #         only_inputs=True)[0]
+    #     return gradients.unsqueeze(1)
 
 class IDRNetwork(nn.Module):
     def __init__(self, conf):
         super().__init__()
-        # 256
+        # 0
         self.feature_vector_size = conf.get_int('feature_vector_size')
         # 1.0
         self.object_bounding_sphere = conf.get_float('ray_tracer.object_bounding_sphere')
+        
         self.implicit_network = ImplicitNetwork(self.feature_vector_size, **conf.get_config('implicit_network'))
-        self.rendering_network = RenderingNetwork(self.feature_vector_size, **conf.get_config('rendering_network'))
         self.ray_tracer = RayTracing(**conf.get_config('ray_tracer'))
-        self.sample_network = SampleNetwork()
+        # self.sample_network = SampleNetwork()
 
     def forward(self, input):
         # Parse model input
-        intrinsics = input["intrinsics"]
-        uv = input["uv"]
         pose = input["pose"]
-        object_mask = input["object_mask"].reshape(-1)
+        points = input["points"]
         # 获取 v, c
-        ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)
-        # 1,10000
-        batch_size, num_pixels, _ = ray_dirs.shape
+        ray_dirs, cam_loc = rend_util.get_vc(pose, points)
+        # 1，不固定
+        batch_size, num_rays, _ = ray_dirs.shape
 
         self.implicit_network.eval()
         with torch.no_grad():
@@ -191,7 +128,7 @@ class IDRNetwork(nn.Module):
                                                                  ray_directions=ray_dirs)
         self.implicit_network.train()
 
-        points = (cam_loc.unsqueeze(1) + dists.reshape(batch_size, num_pixels, 1) * ray_dirs).reshape(-1, 3)
+        points = (cam_loc.unsqueeze(1) + dists.reshape(batch_size, num_rays, 1) * ray_dirs).reshape(-1, 3)
         sdf_output = self.implicit_network(points)[:, 0:1]
         ray_dirs = ray_dirs.reshape(-1, 3)
         if self.training:
@@ -200,13 +137,13 @@ class IDRNetwork(nn.Module):
             surface_points = points[surface_mask]
             surface_dists = dists[surface_mask].unsqueeze(-1)
             surface_ray_dirs = ray_dirs[surface_mask]
-            surface_cam_loc = cam_loc.unsqueeze(1).repeat(1, num_pixels, 1).reshape(-1, 3)[surface_mask]
+            surface_cam_loc = cam_loc.unsqueeze(1).repeat(1, num_rays, 1).reshape(-1, 3)[surface_mask]
             surface_output = sdf_output[surface_mask]  # [:,1]
             N = surface_points.shape[0]
 
             # eikonal loss
             eik_bounding_box = self.object_bounding_sphere  # 1.0
-            n_eik_points = batch_size * num_pixels // 2  # 5000
+            n_eik_points = batch_size * num_rays // 2  # 5000
             # [5000,3] 在 -1～1 的范围内随机采样
             eikonal_points = torch.empty(n_eik_points, 3).uniform_(-eik_bounding_box, eik_bounding_box).cuda()
             eikonal_pixel_points = points.clone()
